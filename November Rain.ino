@@ -1,26 +1,17 @@
-// Deskbot lyrics on the 160 x 128 ST7735 Black Tab.
-#include <Arduino.h>
+// November Rain: timing measured from the supplied 127.027-second clip.
+// BenchTwin ESP32-S3 N16R8 + Adafruit_ILI9341, existing CS=1 DC=2 RST=6.
+// Video-relative timestamps; this sketch displays lyrics, it does not play audio.
+// Native integer-scale GFX font: no stretched bitmaps, no auto-wrap or clipping.
 #include <SPI.h>
 #include <Adafruit_GFX.h>
-#include <Adafruit_ST7735.h>
-#include <math.h>
-
-#define CS 5
-#define DC 2
-#define RST 4
-#define SYNC_PIN 27
-#define TFT_TAB INITR_BLACKTAB
-
-Adafruit_ST7735 tft(CS, DC, RST);
-bool previousButton = HIGH;
-unsigned long lastRestart = 0;
-
+#include <Adafruit_ILI9341.h>
+Adafruit_ILI9341 tft(1,2,6);
 const unsigned long CLIP_MS = 127027;
 const int COUNT = 12;
 const unsigned long starts[12]={7074,21355,33600,45579,58458,68168,73040,81248,85052,94828,107841,117784};
 const unsigned long ends[12]={14148,30330,39039,51585,67500,72372,80580,84384,91891,100967,114180,127027};
 unsigned long epoch=0;
-int lastCue=-1;
+int lastCue=-2;
 int screenW=160,screenH=128,fontScale=1;
 
 const uint16_t backdrop[10052]={
@@ -340,16 +331,10 @@ const uint16_t backdrop[10052]={
 151,119,1,33808,152,119,1,25358,153,119,1,29582,154,119,1,29454,155,119,1,25356,156,119,1,33808,157,119,1,25356,158,119,1,42260,
 159,119,1,50712
 };
-void background(bool lyricsOnly) {
-  tft.startWrite();
+void background() {
   for(int i=0;i<10052;i+=4) {
-    const int row = backdrop[i+1];
-    const int y = row * screenH / 120;
-    const int h = (row + 1) * screenH / 120 - y;
-    if (lyricsOnly && (y < 25 || y >= 85)) continue;
-    tft.writeFillRect(backdrop[i],y,backdrop[i+2],h,backdrop[i+3]);
+    tft.fillRect(backdrop[i]*2,backdrop[i+1]*2,backdrop[i+2]*2,2,backdrop[i+3]);
   }
-  tft.endWrite();
 }
 void lineText(const char* text,int row,int rows) {
   int length=0;
@@ -362,11 +347,11 @@ void lineText(const char* text,int row,int rows) {
   tft.setTextSize(size);
   tft.setTextColor(tft.color565(65,25,80));
   tft.setCursor(x+2,y+2); tft.print(text);
-  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextColor(ILI9341_WHITE);
   tft.setCursor(x,y); tft.print(text);
 }
 void drawCue(int cue) {
-  background(true);
+  background();
   switch(cue) {
     case 0:
       lineText("WHEN I LOOK INTO",0,4);
@@ -434,84 +419,24 @@ void drawCue(int cue) {
       break;
   }
 }
-// The upper backdrop rows are solid across the width.
-uint16_t skyColors[128];
-constexpr int SPARK_COUNT = 18;
-int16_t sparkX[SPARK_COUNT], sparkY[SPARK_COUNT];
-bool trailVisible = false;
-unsigned long lastTrailFrame = 0;
-
-void clearTrail() {
-  if (!trailVisible) return;
-  for (int i = 0; i < SPARK_COUNT; ++i) {
-    tft.drawPixel(sparkX[i], sparkY[i], skyColors[sparkY[i]]);
-  }
-  trailVisible = false;
-}
-
-void drawTrail(unsigned long elapsed) {
-  clearTrail();
-  const float phase = (elapsed % 2400) / 2400.0f;
-  for (int i = 0; i < SPARK_COUNT; ++i) {
-    const float angle = 6.2831853f * (phase - i * 0.007f);
-    const float sine = sinf(angle);
-    sparkX[i] = 80 + (int)(40.0f * sine * sine * sine);
-    sparkY[i] = 49 - (int)(2.0f * (13.0f * cosf(angle)
-        - 5.0f * cosf(2.0f * angle) - 2.0f * cosf(3.0f * angle)
-        - cosf(4.0f * angle)));
-    const uint16_t color = i < 6 ? ST77XX_WHITE : tft.color565(247, 189, 246);
-    tft.drawPixel(sparkX[i], sparkY[i], color);
-
-  }
-  trailVisible = true;
-}
-
 void setup() {
-  Serial.begin(115200);
-  pinMode(SYNC_PIN, INPUT_PULLUP);
-  SPI.begin(18, -1, 23, CS);
-  tft.initR(TFT_TAB);
-  tft.setSPISpeed(27000000);
+  SPI.begin(12,13,11,1);
+  tft.begin();
   tft.setRotation(1);
   screenW=tft.width(); screenH=tft.height();
   fontScale=screenW/160;
   if(fontScale<1) fontScale=1;
   tft.setTextWrap(false);
-  for (size_t i = 0; i < sizeof(backdrop) / sizeof(backdrop[0]); i += 4) {
-    const int row = backdrop[i+1];
-    if (row >= 94) break;
-    for (int y = row * screenH / 120; y < (row + 1) * screenH / 120; ++y) {
-      skyColors[y] = backdrop[i+3];
-    }
-  }
-  background(false);
+  background();
   epoch=millis();
 }
 void loop() {
-  const unsigned long now = millis();
-  const bool button = digitalRead(SYNC_PIN);
-  if (previousButton == HIGH && button == LOW && now - lastRestart >= 200) {
-    epoch = now;
-    lastRestart = now;
-  }
-  previousButton = button;
-  while (Serial.available()) {
-    if (Serial.read() == 's') epoch = now;
-  }
-  unsigned long elapsed = (now - epoch) % CLIP_MS;
+  unsigned long elapsed=(millis()-epoch)%CLIP_MS;
   int cue=-1;
   for(int i=0;i<COUNT;i++) {
     if(elapsed>=starts[i] && elapsed<ends[i]) cue=i;
   }
   // Paint only on cue changes: no full-screen clear/redraw every loop.
-  if (cue != lastCue) {
-    clearTrail();
-    drawCue(cue);
-    lastCue = cue;
-  }
-  if (cue == -1 && now - lastTrailFrame >= 40) {
-    drawTrail(elapsed);
-    lastTrailFrame = now;
-  }
+  if(cue!=lastCue) { drawCue(cue); lastCue=cue; }
   delay(10);
 }
